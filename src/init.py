@@ -11,8 +11,7 @@ if str(src_path) not in sys.path:
 
 from visualizer.visualizationUtils import VisualizationUtils
 from data_processor.detection_dataset3 import GrowthStrawberryDataset
-from model.mamba_detector import MambaCropDetector
-from model.mockModel import MockModel
+from model.mockModel import MockDetectionModel
 from engine.trainer import DetectionTrainer, train_one_epoch, evaluate_one_epoch
 
 
@@ -39,7 +38,6 @@ if __name__ == "__main__":
     GSD_JSON_PATH = Path("D:/Work_Space/D/1_AUT_MPhil_research/Experiments/crop_tracker/src/crop_tracker/Dataset/GSD-Annotations/RGB-1-2021.json")
     GSD_IMAGES_DIR = Path( "D:/Work_Space/D/1_AUT_MPhil_research/Experiments/crop_tracker/src/crop_tracker/Dataset/GSD-Images/GSD-Images-2021/RGB-1-2021/img/") 
     INPUT_IMAGE_SIZE = (512, 512)
-    backbone_model_name = "nvidia/MambaVision-S-1K"  # Example backbone model name
     val_split = 0.2  # 20% for validation
     num_epochs = 1  # For testing, keep it low. Increase for actual training.
 
@@ -90,14 +88,18 @@ if __name__ == "__main__":
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
+           # Quick sanity check on the first batch
+    for images, targets in train_loader:
+        print(f"Batch Images shape: {images.shape}")
+        print(f"Batch Targets length: {len(targets)}")
+        break  # Only check the first batch for testing 
+
     if test_env:
-        # Quick sanity check on the first batch
-        for images, targets in train_loader:
-            print(f"Batch Images shape: {images.shape}")
-            print(f"Batch Targets length: {len(targets)}")
-            break  # Only check the first batch for testing
-            model = MockModel(dim=512)
+        model = MockDetectionModel(num_classes=2)
     else:
+        from model.mamba_detector import MambaCropDetector
+
+        backbone_model_name = "nvidia/MambaVision-S-1K"  # Example backbone model name
         model = MambaCropDetector(backbone=backbone_model_name, num_classes=2)
 
     model = model.to(device)
@@ -108,12 +110,16 @@ if __name__ == "__main__":
 
     trainer = DetectionTrainer(
         model=model,
-        train_dataset=dataset,
+        train_dataloader=train_loader,
+        val_dataloader=val_loader,
         batch_size=4,
         lr=1e-4,
         device=device
     )
     trainer.fit(max_epochs=num_epochs, save_dir=Path.cwd() / "checkpoints")
+
+
+    
 
 
 

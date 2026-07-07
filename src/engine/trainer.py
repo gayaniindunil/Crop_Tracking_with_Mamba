@@ -5,38 +5,38 @@ from tqdm import tqdm
 
 import matplotlib.pyplot as plt
 
-def train_one_epoch(model, dataloader, optimizer, device):
-    model.train()
-    total_loss = 0.0
-    for images, targets in dataloader:
-        images = [image.to(device) for image in images]
-        targets = [{key: value.to(device) for key, value in target.items()} for target in targets]
+# def train_one_epoch(model, dataloader, optimizer, device):
+#     model.train()
+#     total_loss = 0.0
+#     for images, targets in dataloader:
+#         images = [image.to(device) for image in images]
+#         targets = [{key: value.to(device) for key, value in target.items()} for target in targets]
 
-        loss_dict = model(images, targets)
-        loss = sum(loss_value for loss_value in loss_dict.values())
+#         loss_dict = model(images, targets)
+#         loss = sum(loss_value for loss_value in loss_dict.values())
 
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
+#         optimizer.zero_grad()
+#         loss.backward()
+#         optimizer.step()
 
-        total_loss += float(loss.item())
+#         total_loss += float(loss.item())
 
-    return total_loss / max(1, len(dataloader))
+#     return total_loss / max(1, len(dataloader))
 
 
-@torch.no_grad()
-def evaluate_one_epoch(model, dataloader, device):
-    model.eval()
-    total_loss = 0.0
-    for images, targets in dataloader:
-        images = [image.to(device) for image in images]
-        targets = [{key: value.to(device) for key, value in target.items()} for target in targets]
+# @torch.no_grad()
+# def evaluate_one_epoch(model, dataloader, device):
+#     model.eval()
+#     total_loss = 0.0
+#     for images, targets in dataloader:
+#         images = [image.to(device) for image in images]
+#         targets = [{key: value.to(device) for key, value in target.items()} for target in targets]
 
-        loss_dict = model(images, targets)
-        loss = sum(loss_value for loss_value in loss_dict.values())
-        total_loss += float(loss.item())
+#         loss_dict = model(images, targets)
+#         loss = sum(loss_value for loss_value in loss_dict.values())
+#         total_loss += float(loss.item())
 
-    return total_loss / max(1, len(dataloader))
+#     return total_loss / max(1, len(dataloader))
 
 
 
@@ -93,7 +93,10 @@ class DetectionTrainer:
             
         # Basic training ecosystem modules
         self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=lr, weight_decay=1e-4)
-        
+        self.criterion_cls = nn.CrossEntropyLoss()
+        self.criterion_box = nn.SmoothL1Loss(reduction="none")
+
+
     def dummy_loss_function(self, model_outputs, targets):
         """
         Placeholder loss function. Replace this with your specific loss criteria
@@ -114,61 +117,137 @@ class DetectionTrainer:
             
         # Returning structural toy tracking loss scalar variable for framework evaluation
         return total_loss + torch.mean(model_outputs) * 0.0
+    
+    def compute_grid_accuracy(self, pred_classes, class_target, object_mask):
+        '''
+        Args:
+            pred_classes: Model logits [Batch, NumClasses, 16, 16]
+            class_target: Ground truth indices [Batch, 16, 16]
+            object_mask: Binary mask [Batch, 16, 16] (1.0 for object, 0.0 for background)
+        '''
+        # Get the predicted class indices by taking the argmax along the channel dimension
+        preds = torch.argmax(pred_classes, dim=1) # Shape: [Batch, 16, 16]
+        
+        # Create a boolean map of correct predictions
+        correct = (preds == class_target).float()
+        
+        # 1. Calculate accuracy on cells containing actual objects (Foreground)
+        fg_total = object_mask.sum().item()
+        fg_correct = (correct * object_mask).sum().item()
+        fg_acc = (fg_correct / fg_total) if fg_total > 0 else 0.0
+        
+        # 2. Calculate accuracy on background cells
+        bg_mask = 1.0 - object_mask
+        bg_total = bg_mask.sum().item()
+        bg_correct = (correct * bg_mask).sum().item()
+        bg_acc = (bg_correct / bg_total) if bg_total > 0 else 0.0
+        
+        return fg_acc, bg_acc
 
     def train_epoch(self, epoch_idx: int) -> float:
         """Runs one detection training epoch and returns the average loss."""
         self.model.train()
         running_loss = 0.0
+        running_fg_acc = 0.0
+        running_bg_acc = 0.0
 
         progress_bar = tqdm(self.train_dataloader, desc=f"Epoch {epoch_idx}")
 
         for images, targets in progress_bar:
-            images = [image.to(self.device) for image in images]
-            targets = [
-                {k: v.to(self.device) if torch.is_tensor(v) else v for k, v in target.items()}
-                for target in targets
-            ]
 
-            loss_dict = self.model(images, targets)
-            if not isinstance(loss_dict, dict):
-                raise TypeError(
-                    "Detection models must return a dictionary of losses during training."
-                )
+            if isinstance(images, list):
+                images = torch.stack(images).to(self.device)
+            else:
+                images = images.to(self.device)
 
-            loss = sum(loss_value for loss_value in loss_dict.values())
+            if isinstance(targets, list):
+                class_target = torch.stack([t["class_target"] for t in targets]).to(self.device)
+                box_target = torch.stack([t["box_target"] for t in targets]).to(self.device)
+                object_mask = torch.stack([t["object_mask"] for t in targets]).to(self.device)
+            else:
+                class_target = targets["class_target"].to(self.device)
+                box_target = targets["box_target"].to(self.device)
+                object_mask = targets["object_mask"].to(self.device)
 
-            self.optimizer.zero_grad()
-            loss.backward()
+            pred_classes, pred_boxes = self.model(images)
+            loss_cls = self.criterion_cls(pred_classes, class_target)
+
+
+            box_loss_map = self.criterion_box(pred_boxes, box_target).mean(dim=1)
+            loss_box = (box_loss_map * object_mask).sum() / object_mask.sum().clamp(min=1.0)
+            # if not isinstance(loss_cls, dict):
+            #     raise TypeError(
+            #         "Detection models must return a dictionary of losses during training."
+            #     )            
+
+            total_loss = loss_cls + loss_box
+            total_loss.backward()
             self.optimizer.step()
 
-            running_loss += float(loss.item())
-            progress_bar.set_postfix({"Loss": f"{loss.item():.4f}"})
-
-        return running_loss / max(1, len(self.train_dataloader))
+            fg_acc, bg_acc = self.compute_grid_accuracy(pred_classes, class_target, object_mask)
+            running_fg_acc += fg_acc
+            running_bg_acc += bg_acc
+            running_loss += float(total_loss.item())
+            
+            # Show immediate batch accuracy in progress bar (multiplied by 100 for percentage)
+            progress_bar.set_postfix({
+                "Loss": f"{total_loss.item():.4f}", 
+                "ObjAcc": f"{fg_acc * 100:.1f}%",
+                "BgAcc": f"{bg_acc * 100:.1f}%"
+            })
+            
+        num_batches = max(1, len(self.train_dataloader))
+        epoch_loss = running_loss / num_batches
+        epoch_fg_acc = running_fg_acc / num_batches
+        epoch_bg_acc = running_bg_acc / num_batches
+        
+        print(f"\n>> [TRAIN END] Avg Loss: {epoch_loss:.4f} | Avg Crop Accuracy: {epoch_fg_acc*100:.2f}% | Avg Bg Accuracy: {epoch_bg_acc*100:.2f}%")
+        return epoch_loss
             
     
     @torch.no_grad()
     def evaluate_one_epoch(self):
         self.model.eval()
         running_loss = 0.0
+        running_fg_acc = 0.0
+        running_bg_acc = 0.0
 
-        for images, targets in self.val_dataloader:
-            images = [image.to(self.device) for image in images]
-            targets = [
-                {k: v.to(self.device) if torch.is_tensor(v) else v for k, v in target.items()}
-                for target in targets
-            ]
+        progress_bar = tqdm(self.val_dataloader, desc="Validating")
+        
+        with torch.no_grad():
+            for images, targets in progress_bar:
+                images = images.to(self.device)
 
-            loss_dict = self.model(images, targets)
-            if not isinstance(loss_dict, dict):
-                raise TypeError(
-                    "Detection models must return a dictionary of losses during validation."
-                )
+                class_target = targets["class_target"].to(self.device) # Shape: [Batch, 16, 16]
+                box_target = targets["box_target"].to(self.device)     # Shape: [Batch, 4, 16, 16]
+                object_mask = targets["object_mask"].to(self.device)
 
-            loss = sum(loss_value for loss_value in loss_dict.values())
-            running_loss += float(loss.item())
+                pred_classes, pred_boxes = self.model(images)
 
-        return running_loss / max(1, len(self.val_dataloader))
+                loss_cls = self.criterion_cls(pred_classes, class_target)
+
+                raw_box_loss = self.criterion_box(pred_boxes, box_target).mean(dim=1)
+                loss_box = (raw_box_loss * object_mask).sum() / object_mask.sum().clamp(min=1.0)
+                total_loss = loss_cls + loss_box
+
+                # --- CALCULATE ACCURACY ---
+                fg_acc, bg_acc = self.compute_grid_accuracy(pred_classes, class_target, object_mask)
+                running_fg_acc += fg_acc
+                running_bg_acc += bg_acc
+                running_loss += float(total_loss.item())
+                
+                progress_bar.set_postfix({
+                    "Val_Loss": f"{total_loss.item():.4f}", 
+                    "Val_ObjAcc": f"{fg_acc * 100:.1f}%"
+                })
+                            
+                num_batches = max(1, len(self.val_dataloader))
+                val_loss = running_loss / num_batches
+                val_fg_acc = running_fg_acc / num_batches
+                val_bg_acc = running_bg_acc / num_batches
+                
+            print(f">> [VAL END] Avg Loss: {val_loss:.4f} | Avg Crop Accuracy: {val_fg_acc*100:.2f}% | Avg Bg Accuracy: {val_bg_acc*100:.2f}%")
+        return val_loss
 
     def fit(self, max_epochs: int, save_dir: Path | str):
         """Executes full multi-epoch training pipeline execution steps."""

@@ -17,7 +17,8 @@ import requests
 
 def get_backbone(model_name):
     print(f"Loading {model_name} Backbone...")
-    backbone = AutoModel.from_pretrained(model_name, trust_remote_code=True)
+    backbone = AutoModel.from_pretrained("nvidia/MambaVision-S-1K", trust_remote_code=True)
+    # backbone = AutoModel.from_pretrained(model_name, trust_remote_code=True)
     backbone.train() # only get the feature extractor part of the model, not the classifier head
     return backbone
 
@@ -49,6 +50,12 @@ class MambaCropDetector(nn.Module):
 
         class_logits = self.class_head(stage_features)
         bbox_preds = self.box_head(stage_features)
+
+
+        # # If labels are provided, calculate loss internally
+        # if labels is not None:
+        #     loss = self.loss_fn(logits, labels)
+        #     return logits, loss
         return class_logits, bbox_preds
 
 # to use the model you need to load the backbone and then create an instance of the MambaCropDetector with the backbone

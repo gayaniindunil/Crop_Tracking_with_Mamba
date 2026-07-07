@@ -33,6 +33,7 @@ class GrowthStrawberryDataset(Dataset):
         self.json_path = Path(json_path)
         self.images_dir = Path(images_dir)
         self.image_size = image_size
+        self.feature_map_size = (image_size[0] // 32,image_size[1] // 32)
 
         with self.json_path.open("r", encoding="utf-8") as handle:
             data = json.load(handle)
@@ -94,6 +95,67 @@ class GrowthStrawberryDataset(Dataset):
         
         image_tensor = self._load_image(image_meta["file_name"])
         raw_annotations = self.annotations_by_image.get(image_id, [])
+
+        original_w=image_meta["width"]
+        original_h=image_meta["height"]
+        feature_h, feature_w = self.feature_map_size
+
+        class_grid = torch.zeros((feature_h, feature_w), dtype=torch.long)
+        box_grid = torch.zeros((4, feature_h, feature_w), dtype=torch.float32)
+        object_mask = torch.zeros((feature_h, feature_w), dtype=torch.float32)
+        track_grid = torch.zeros((feature_h, feature_w), dtype=torch.long)
+
+        for annotation in raw_annotations:
+            x, y, w, h = annotation["bbox"]
+            category_id = annotation["category_id"]
+            track_id  = annotation["track_id"]
+
+            x = x * (self.image_size[0] / original_w)
+            y = y * (self.image_size[1] / original_h)
+            w = w * (self.image_size[0] / original_w)
+            h = h * (self.image_size[1] / original_h)
+            
+            center_x = x + (w / 2.0)
+            center_y = y + (h / 2.0)
+
+            grid_x = min(feature_w - 1, max(0, int(center_x / self.image_size[0] * feature_w)))
+            grid_y = min(feature_h - 1, max(0, int(center_y / self.image_size[1] * feature_h)))
+
+            # Overlap handling: If a cell is already occupied, keep the larger object
+            if object_mask[grid_y, grid_x] > 0:
+                prev_area = box_grid[2, grid_y, grid_x] * box_grid[3, grid_y, grid_x]
+                new_area = (w / self.image_size[0]) * (h / self.image_size[1])
+                if new_area <= prev_area:
+                    continue
+
+            class_grid[grid_y, grid_x] = int(category_id)
+            box_grid[:, grid_y, grid_x] = torch.tensor([
+                x / self.image_size[0],
+                y / self.image_size[1],
+                w / self.image_size[0],
+                h / self.image_size[1],
+            ], dtype=torch.float32)
+            
+            # Flip the object mask to 1.0 for this cell to flag an active object
+            object_mask[grid_y, grid_x] = 1.0
+            track_grid[grid_y, grid_x] = int(track_id)
+
+        target = {
+            "image_id": torch.tensor(image_id, dtype=torch.long),
+            "class_target": class_grid,       # Shape: [16, 16]
+            "box_target": box_grid,           # Shape: [4, 16, 16]
+            "object_mask": object_mask,       # Shape: [16, 16]
+            "track_ids": track_grid           # Shape: [16, 16] (Spatially mapped track IDs)
+        }
+
+        return image_tensor, target
+        
+    def __get_raw_item__(self, idx):
+        image_meta = self.images[idx]
+        image_id = int(image_meta["id"])
+        
+        image_tensor = self._load_image(image_meta["file_name"])
+        raw_annotations = self.annotations_by_image.get(image_id, [])
         
         # Process bounding boxes through clean unified helper function
         processed_targets = self.resize_targets(
@@ -113,7 +175,7 @@ class GrowthStrawberryDataset(Dataset):
             "track_ids": torch.tensor(track_ids, dtype=torch.long),
         }
 
-        return image_tensor, target
+        return image_tensor,target
 
  
     def get_images_and_boxes_for_track_id(self, track_id):
@@ -153,7 +215,7 @@ class GrowthStrawberryDataset(Dataset):
 
     def visualize_actual_grid_targets(self, img_idx, save_path: Path | None = None):
         """Visualizes processed dataset targets directly on top of the loaded tensor image."""
-        image_tensor, target = self.__getitem__(img_idx)
+        image_tensor, target = self.__get_raw_item__(img_idx)
         image_meta = self.images[img_idx]
 
         # Convert channels-first tensor back to standard display format (HWC)

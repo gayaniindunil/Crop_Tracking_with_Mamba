@@ -12,7 +12,7 @@ if str(src_path) not in sys.path:
 from visualizer.visualizationUtils import VisualizationUtils
 from data_processor.detection_dataset3 import GrowthStrawberryDataset
 from model.mockModel import MockDetectionModel
-from engine.trainer import DetectionTrainer, train_one_epoch, evaluate_one_epoch
+from engine.trainer import DetectionTrainer
 
 
 
@@ -34,12 +34,12 @@ def detection_collate_fn(batch):
 
 
 if __name__ == "__main__":
-    test_env = True  # Set to False when running in production
-    GSD_JSON_PATH = Path("D:/Work_Space/D/1_AUT_MPhil_research/Experiments/crop_tracker/src/crop_tracker/Dataset/GSD-Annotations/RGB-1-2021.json")
-    GSD_IMAGES_DIR = Path( "D:/Work_Space/D/1_AUT_MPhil_research/Experiments/crop_tracker/src/crop_tracker/Dataset/GSD-Images/GSD-Images-2021/RGB-1-2021/img/") 
+    test_env = False  # Set to False when running in production
+    GSD_JSON_PATH = Path("../../Dataset/GSD-Annotations/RGB-1-2021.json")
+    GSD_IMAGES_DIR = Path( "../../Dataset/GSD-Images/GSD-Images-2021/RGB-1-2021/img/") 
     INPUT_IMAGE_SIZE = (512, 512)
     val_split = 0.2  # 20% for validation
-    num_epochs = 1  # For testing, keep it low. Increase for actual training.
+    num_epochs = 100  # For testing, keep it low. Increase for actual training.
 
     dataset = GrowthStrawberryDataset(
         json_path=GSD_JSON_PATH,
@@ -74,7 +74,7 @@ if __name__ == "__main__":
         batch_size=4,
         shuffle=False,
         num_workers=0,
-        collate_fn=detection_collate_fn  # Handles the variable label count
+        # collate_fn=detection_collate_fn  # Handles the variable label count
         
     )
 
@@ -83,7 +83,7 @@ if __name__ == "__main__":
         batch_size=2, 
         shuffle=False, 
         num_workers=0,
-        collate_fn=detection_collate_fn  # Handles the variable label count
+        # collate_fn=detection_collate_fn  # Handles the variable label count
         )
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

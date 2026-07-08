@@ -95,6 +95,7 @@ class DetectionTrainer:
         self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=lr, weight_decay=1e-4)
         self.criterion_cls = nn.CrossEntropyLoss()
         self.criterion_box = nn.SmoothL1Loss(reduction="none")
+        # criterion_box = torch.nn.SmoothL1Loss(reduction='none')
 
 
     def dummy_loss_function(self, model_outputs, targets):
@@ -182,6 +183,7 @@ class DetectionTrainer:
 
             total_loss = loss_cls + loss_box
             total_loss.backward()
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
             self.optimizer.step()
 
             fg_acc, bg_acc = self.compute_grid_accuracy(pred_classes, class_target, object_mask)
@@ -249,49 +251,99 @@ class DetectionTrainer:
             print(f">> [VAL END] Avg Loss: {val_loss:.4f} | Avg Crop Accuracy: {val_fg_acc*100:.2f}% | Avg Bg Accuracy: {val_bg_acc*100:.2f}%")
         return val_loss
 
-    def fit(self, max_epochs: int, save_dir: Path | str):
-        """Executes full multi-epoch training pipeline execution steps."""
+
+    def fit(self, max_epochs: int, save_dir: Path | str, patience: int = 5):
+        """Executes full multi-epoch training pipeline execution steps with early stopping and auto-resume."""
         save_dir = Path(save_dir)
         save_dir.mkdir(parents=True, exist_ok=True)
         
         print(f"Starting training on device: {self.device}")
         
+        # State tracking trackers
         train_losses = []
         val_losses = []
-        
-        for epoch in range(1, max_epochs + 1):
+        start_epoch = 1
+        self.best_val_loss = float('inf')
+        patience_counter = 0
+
+        # Search for any pre-saved epoch snapshot weights
+        checkpoints = list(save_dir.glob("detector_epoch_*.pt"))
+        if checkpoints:
+            epochs_found = [int(p.stem.split('_')[-1]) for p in checkpoints]
+            latest_epoch = max(epochs_found)
+            latest_checkpoint = save_dir / f"detector_epoch_{latest_epoch}.pt"
+            
+            print(f"\n[RESUME DETECTED] Restoring engine weights from previous training stage -> Epoch {latest_epoch}")
+            checkpoint = torch.load(latest_checkpoint, map_location=self.device)
+            
+            # Load active states
+            self.model.load_state_dict(checkpoint['model_state_dict'])
+            self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            
+            # Reconstruct training historical arrays
+            train_losses = checkpoint.get('train_losses', [])[:latest_epoch]
+            val_losses = checkpoint.get('val_losses', [])[:latest_epoch]
+            self.best_val_loss = checkpoint.get('best_val_loss', float('inf'))
+            patience_counter = checkpoint.get('patience_counter', 0)
+            
+            # Fast-forward your iterator slot index
+            start_epoch = latest_epoch + 1
+            print(f"Resuming training execution sequence safely from Epoch {start_epoch}\n")
+
+        for epoch in range(start_epoch, max_epochs + 1):
             avg_train_loss = self.train_epoch(epoch)
             train_losses.append(avg_train_loss)
             print(f"Summary -> Epoch [{epoch}/{max_epochs}] | Average Loss: {avg_train_loss:.5f}")
-
 
             val_loss = self.evaluate_one_epoch()
             val_losses.append(val_loss)
             print(f"Validation Loss: {val_loss:.5f}")
 
-            # Save periodic verification weights checkpoints
-            if epoch % 5 == 0 or epoch == max_epochs:
+            if val_loss < self.best_val_loss:
+                self.best_val_loss = val_loss
+                patience_counter = 0 # Reset countdown timer flag
+                
+                # Save best structural checkpoints
+                best_model_path = save_dir / "best_mamba_crop_detector.pth"
+                torch.save(self.model.state_dict(), best_model_path)
+                print(f"--> Saved a new best model checkpoint configuration with Val Loss: {val_loss:.4f}")
+            else:
+                patience_counter += 1
+                print(f"--> No validation improvement. Early stopping patience step: {patience_counter}/{patience}")
+
+            # Save periodic verification weights checkpoints (storing tracking arrays for resume)
+            if epoch % 5 == 0 or epoch == max_epochs or patience_counter >= patience:
                 checkpoint_path = save_dir / f"detector_epoch_{epoch}.pt"
                 torch.save({
                     'epoch': epoch,
                     'model_state_dict': self.model.state_dict(),
                     'optimizer_state_dict': self.optimizer.state_dict(),
-                    'loss': avg_train_loss,
+                    'train_losses': train_losses,
+                    'val_losses': val_losses,
+                    'best_val_loss': self.best_val_loss,
+                    'patience_counter': patience_counter,
                 }, checkpoint_path)
                 print(f"Saved training framework structural weights snapshot: {checkpoint_path}")
 
-        plt.figure(figsize=(10, 6))
-        plt.plot(range(1, len(train_losses) + 1), train_losses, label="Train Loss", marker="o", markersize=3, linewidth=2)
-        plt.plot(range(1, len(val_losses) + 1), val_losses, label="Val Loss", marker="s", markersize=3, linewidth=2)
-        plt.xlabel("Epoch", fontsize=12)
-        plt.ylabel("Loss", fontsize=12)
-        plt.title("Training and Validation Loss Curves - Growth Strawberry GSD Dataset", fontsize=14)
-        plt.legend(fontsize=11)
-        plt.grid(True, alpha=0.3)
-        plot_path = Path.cwd() / "training_loss_curves.png"
-        plt.savefig(plot_path, dpi=150, bbox_inches="tight")
-        print(f"\nLoss curves saved to {plot_path}")
-        plt.show()
+            # Trigger immediate loop termination if patience ran completely out
+            if patience_counter >= patience:
+                print(f"\n[EARLY STOPPING TRIGGERED] Validation loss stalled for {patience} straight epochs. Halting pipeline.")
+                break
+
+
+        if train_losses and val_losses:
+            plt.figure(figsize=(10, 6))
+            plt.plot(range(1, len(train_losses) + 1), train_losses, label="Train Loss", marker="o", markersize=3, linewidth=2)
+            plt.plot(range(1, len(val_losses) + 1), val_losses, label="Val Loss", marker="s", markersize=3, linewidth=2)
+            plt.xlabel("Epoch", fontsize=12)
+            plt.ylabel("Loss", fontsize=12)
+            plt.title("Training and Validation Loss Curves - Growth Strawberry GSD Dataset", fontsize=14)
+            plt.legend(fontsize=11)
+            plt.grid(True, alpha=0.3)
+            plot_path = Path.cwd() / "training_loss_curves.png"
+            plt.savefig(plot_path, dpi=150, bbox_inches="tight")
+            print(f"\nLoss curves saved to {plot_path}")
+            plt.close() # Safely clear matplot workspace figures context
 
         print(f"Training complete.")
         if train_losses and val_losses:
@@ -300,5 +352,3 @@ class DetectionTrainer:
         final_model_path = Path.cwd() / "mamba_detector_final.pth"
         torch.save(self.model.state_dict(), final_model_path)
         print(f"Final model saved to {final_model_path}")
-        
-

@@ -12,9 +12,7 @@ if str(src_path) not in sys.path:
 from visualizer.visualizationUtils import VisualizationUtils
 from data_processor.detection_dataset3 import GrowthStrawberryDataset
 from model.mockModel import MockDetectionModel
-from engine.trainer import DetectionTrainer
-
-
+from engine.mambaDetectionTrainer import DetectionTrainer
 
 print("Crop Tracking with Mamba - Initializing...")
 
@@ -116,7 +114,11 @@ if __name__ == "__main__":
         lr=1e-4,
         device=device
     )
-    trainer.fit(max_epochs=num_epochs, save_dir=Path.cwd() / "checkpoints")
+    trainer.fit(
+        max_epochs=num_epochs,
+        save_dir=Path.cwd() / "checkpoints",
+        tensorboard_log_dir=Path.cwd() / "outputs" / "tensorboard",
+    )
 
 
     

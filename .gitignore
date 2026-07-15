@@ -1,4 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.ipynb_checkpoints/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Model artifacts / large binaries (keep the repo lightweight)
 *.mp4
 *.png
-/checkpoints
+*.pt
 *.pth
+*.ckpt
+/checkpoints/
+/weights/
+/outputs/
+
+# Data (never commit raw datasets)
+/data/*
+!/data/.gitkeep
+
+# OS
+.DS_Store
+Thumbs.db

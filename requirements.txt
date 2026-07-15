@@ -1,0 +1,26 @@
+# Core
+torch>=2.1
+torchvision>=0.16
+numpy
+einops
+
+# Vision / detection utilities
+opencv-python
+Pillow
+timm
+transformers
+
+# Training & experiment tracking
+tqdm
+tensorboard
+matplotlib
+
+# Misc
+requests
+sympy
+
+# Optional: fused CUDA selective-scan kernel (10-50x speedup over the pure
+# PyTorch fallback in src/model/ssm.py). Requires a CUDA build toolchain;
+# skip this on CPU-only machines, the model runs fine without it.
+# mamba-ssm>=1.2
+# causal-conv1d>=1.2

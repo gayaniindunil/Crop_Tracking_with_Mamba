@@ -44,6 +44,7 @@ import matplotlib.pyplot as plt
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
+from torch.utils.tensorboard import SummaryWriter
 from pathlib import Path
 from tqdm import tqdm
 
@@ -145,7 +146,7 @@ class DetectionTrainer:
         
         return fg_acc, bg_acc
 
-    def train_epoch(self, epoch_idx: int) -> float:
+    def train_epoch(self, epoch_idx: int) -> tuple[float, float, float]:
         """Runs one detection training epoch and returns the average loss."""
         self.model.train()
         running_loss = 0.0
@@ -204,11 +205,11 @@ class DetectionTrainer:
         epoch_bg_acc = running_bg_acc / num_batches
         
         print(f"\n>> [TRAIN END] Avg Loss: {epoch_loss:.4f} | Avg Crop Accuracy: {epoch_fg_acc*100:.2f}% | Avg Bg Accuracy: {epoch_bg_acc*100:.2f}%")
-        return epoch_loss
+        return epoch_loss, epoch_fg_acc, epoch_bg_acc
             
     
     @torch.no_grad()
-    def evaluate_one_epoch(self):
+    def evaluate_one_epoch(self) -> tuple[float, float, float]:
         self.model.eval()
         running_loss = 0.0
         running_fg_acc = 0.0
@@ -249,15 +250,26 @@ class DetectionTrainer:
                 val_bg_acc = running_bg_acc / num_batches
                 
             print(f">> [VAL END] Avg Loss: {val_loss:.4f} | Avg Crop Accuracy: {val_fg_acc*100:.2f}% | Avg Bg Accuracy: {val_bg_acc*100:.2f}%")
-        return val_loss
+        return val_loss, val_fg_acc, val_bg_acc
 
 
-    def fit(self, max_epochs: int, save_dir: Path | str, patience: int = 5):
+    def fit(
+        self,
+        max_epochs: int,
+        save_dir: Path | str,
+        patience: int = 5,
+        tensorboard_log_dir: Path | str | None = None,
+    ):
         """Executes full multi-epoch training pipeline execution steps with early stopping and auto-resume."""
         save_dir = Path(save_dir)
         save_dir.mkdir(parents=True, exist_ok=True)
+        log_dir = Path(tensorboard_log_dir) if tensorboard_log_dir is not None else save_dir / "tensorboard"
+        log_dir.mkdir(parents=True, exist_ok=True)
+
+        writer = SummaryWriter(log_dir=str(log_dir))
         
         print(f"Starting training on device: {self.device}")
+        print(f"TensorBoard logs will be written to: {log_dir}")
         
         # State tracking trackers
         train_losses = []
@@ -290,45 +302,58 @@ class DetectionTrainer:
             start_epoch = latest_epoch + 1
             print(f"Resuming training execution sequence safely from Epoch {start_epoch}\n")
 
-        for epoch in range(start_epoch, max_epochs + 1):
-            avg_train_loss = self.train_epoch(epoch)
-            train_losses.append(avg_train_loss)
-            print(f"Summary -> Epoch [{epoch}/{max_epochs}] | Average Loss: {avg_train_loss:.5f}")
+        try:
+            for epoch in range(start_epoch, max_epochs + 1):
+                avg_train_loss, avg_train_fg_acc, avg_train_bg_acc = self.train_epoch(epoch)
+                train_losses.append(avg_train_loss)
+                print(f"Summary -> Epoch [{epoch}/{max_epochs}] | Average Loss: {avg_train_loss:.5f}")
 
-            val_loss = self.evaluate_one_epoch()
-            val_losses.append(val_loss)
-            print(f"Validation Loss: {val_loss:.5f}")
+                writer.add_scalar("Loss/train", avg_train_loss, epoch)
+                writer.add_scalar("Accuracy/train_foreground", avg_train_fg_acc, epoch)
+                writer.add_scalar("Accuracy/train_background", avg_train_bg_acc, epoch)
 
-            if val_loss < self.best_val_loss:
-                self.best_val_loss = val_loss
-                patience_counter = 0 # Reset countdown timer flag
-                
-                # Save best structural checkpoints
-                best_model_path = save_dir / "best_mamba_crop_detector.pth"
-                torch.save(self.model.state_dict(), best_model_path)
-                print(f"--> Saved a new best model checkpoint configuration with Val Loss: {val_loss:.4f}")
-            else:
-                patience_counter += 1
-                print(f"--> No validation improvement. Early stopping patience step: {patience_counter}/{patience}")
+                val_loss, val_fg_acc, val_bg_acc = self.evaluate_one_epoch()
+                val_losses.append(val_loss)
+                print(f"Validation Loss: {val_loss:.5f}")
 
-            # Save periodic verification weights checkpoints (storing tracking arrays for resume)
-            if epoch % 5 == 0 or epoch == max_epochs or patience_counter >= patience:
-                checkpoint_path = save_dir / f"detector_epoch_{epoch}.pt"
-                torch.save({
-                    'epoch': epoch,
-                    'model_state_dict': self.model.state_dict(),
-                    'optimizer_state_dict': self.optimizer.state_dict(),
-                    'train_losses': train_losses,
-                    'val_losses': val_losses,
-                    'best_val_loss': self.best_val_loss,
-                    'patience_counter': patience_counter,
-                }, checkpoint_path)
-                print(f"Saved training framework structural weights snapshot: {checkpoint_path}")
+                writer.add_scalar("Loss/val", val_loss, epoch)
+                writer.add_scalar("Accuracy/val_foreground", val_fg_acc, epoch)
+                writer.add_scalar("Accuracy/val_background", val_bg_acc, epoch)
 
-            # Trigger immediate loop termination if patience ran completely out
-            if patience_counter >= patience:
-                print(f"\n[EARLY STOPPING TRIGGERED] Validation loss stalled for {patience} straight epochs. Halting pipeline.")
-                break
+                if val_loss < self.best_val_loss:
+                    self.best_val_loss = val_loss
+                    patience_counter = 0 # Reset countdown timer flag
+                    
+                    # Save best structural checkpoints
+                    best_model_path = save_dir / "best_mamba_crop_detector.pth"
+                    torch.save(self.model.state_dict(), best_model_path)
+                    print(f"--> Saved a new best model checkpoint configuration with Val Loss: {val_loss:.4f}")
+                else:
+                    patience_counter += 1
+                    print(f"--> No validation improvement. Early stopping patience step: {patience_counter}/{patience}")
+
+                # Save periodic verification weights checkpoints (storing tracking arrays for resume)
+                if epoch % 5 == 0 or epoch == max_epochs or patience_counter >= patience:
+                    checkpoint_path = save_dir / f"detector_epoch_{epoch}.pt"
+                    torch.save({
+                        'epoch': epoch,
+                        'model_state_dict': self.model.state_dict(),
+                        'optimizer_state_dict': self.optimizer.state_dict(),
+                        'train_losses': train_losses,
+                        'val_losses': val_losses,
+                        'best_val_loss': self.best_val_loss,
+                        'patience_counter': patience_counter,
+                    }, checkpoint_path)
+                    print(f"Saved training framework structural weights snapshot: {checkpoint_path}")
+
+                writer.flush()
+
+                # Trigger immediate loop termination if patience ran completely out
+                if patience_counter >= patience:
+                    print(f"\n[EARLY STOPPING TRIGGERED] Validation loss stalled for {patience} straight epochs. Halting pipeline.")
+                    break
+        finally:
+            writer.close()
 
 
         if train_losses and val_losses:

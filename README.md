@@ -1,7 +1,6 @@
-# PhenoMamba: Crop Growth-Stage Detection & Tracking with Mamba
+# Crop Growth-Stage Detection & Tracking with Mamba
 
-[![CI](https://github.com/gayaniindunil/Crop_Tracking_with_Mamba/actions/workflows/ci.yml/badge.svg)](https://github.com/gayaniindunil/Crop_Tracking_with_Mamba/actions/workflows/ci.yml)
-[![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+## Crop Tracking with Mamba state-space model
 
 A spatiotemporal state-space model (Mamba/SSM) for jointly **detecting**, **classifying the growth stage of**, and **tracking** individual crops (strawberries) across video frames.
 
